@@ -4,15 +4,27 @@ ServerBase::ServerBase(Int port)
 {
 	result = WSAStartup(MAKEWORD(2, 2), &wsa);
 	this->port = port;
-	threadHandle = 0;
+	threadHandles = new std::vector<HANDLE*>();
 	lSocket = new ListenSocket(this->port);
 	newSocket = 0;
+	ZeroMemory(&clientAddr, sizeof(clientAddr));
 	cSockets = new std::vector<ClientSocket*>();
+	InitializeCriticalSection(&handleSection);
+	InitializeCriticalSection(&cSocketSection);
 }
 
 ServerBase::~ServerBase()
 {
-	if (cSockets != nullptr) {
+	if (threadHandles != nullptr) 
+	{
+		for (auto obj : *threadHandles)
+		{
+			CloseHandle(obj);
+		}
+		delete threadHandles;
+	}
+	if (cSockets != nullptr) 
+	{
 		for (auto* obj : *cSockets) 
 		{
 			delete obj;
@@ -20,11 +32,13 @@ ServerBase::~ServerBase()
 		delete cSockets;
 	}
 	if (lSocket != nullptr) delete lSocket;
+	DeleteCriticalSection(&handleSection);
+	DeleteCriticalSection(&cSocketSection);
 }
 
 void ServerBase::Run()
 {
-	if (InitializeServer())
+	if (!InitializeServer())
 	{
 		//error handler
 		return;
@@ -37,21 +51,25 @@ bool ServerBase::InitializeServer()
 	if (IsWSAStartFailed()) 
 	{
 		//error handler
+		ServerLogger::PrintLog("Failed to start up wsa");
 		return false;
 	}
 	if (lSocket->IsInvalidSock()) 
 	{
 		//error handler
+		ServerLogger::PrintLog("Failed to init listen socket");
 		return false;
 	}
 	if (lSocket->IsUnbindedSocket()) 
 	{
 		//error handler
+		ServerLogger::PrintLog("Failed to bind listen socket");
 		return false;
 	}
 	if (lSocket->IsListeningFailed())
 	{
 		//error handler
+		ServerLogger::PrintLog("Failed to listen connection");
 		return false;
 	}
 	return true;
@@ -64,32 +82,45 @@ bool ServerBase::IsWSAStartFailed()
 
 void ServerBase::AcceptClients()
 {
-	sockaddr_in clientAddr;
 	int addrLen = sizeof(clientAddr);
+	HANDLE threadHandle;
+	ZeroMemory(&clientAddr, sizeof(clientAddr));
  	while (true) 
 	{
 		newSocket = accept(lSocket->GetSocket(), (sockaddr*)&clientAddr, &addrLen);
+		EnterCriticalSection(&handleSection);
+		threadHandles->emplace_back(&threadHandle);
 		threadHandle = (HANDLE)_beginthreadex(0, 0, ServerBase::StateSwitch, this, 0, 0);
+		threadHandles->erase(std::find(threadHandles->begin(), threadHandles->end(), &threadHandle));
+		LeaveCriticalSection(&handleSection);
 		CloseHandle(threadHandle);
 	}
+	//WaitForMultipleObjects(threadHandles->size(), , 1, INFINITE);
 }
 
 unsigned int __stdcall ServerBase::StateSwitch(void* obj)
 {
 	ServerBase* server = static_cast<ServerBase*>(obj);
-	ClientSocket* cSocket = new ClientSocket(server->newSocket);
+	EnterCriticalSection(&server->cSocketSection);
+	ClientSocket* cSocket = new ClientSocket(server->newSocket, server->clientAddr);
 	server->cSockets->emplace_back(cSocket);
-	while (true)
+	LeaveCriticalSection(&server->cSocketSection);
+	bool flag = true;
+	while (flag)
 	{
 		switch (cSocket->GetMainState()) 
 		{
-			case FILETRANS:
-
+			case MAIN:
+				cSocket->ModifyStateWithProtocol();
 				break;
-			default:
-				//error handler
+			case DISCON:
+				flag = false;
 				break;
 		}
 	}
+	EnterCriticalSection(&server->cSocketSection);
+	server->cSockets->erase(std::find(server->cSockets->begin(), server->cSockets->end(), cSocket));
+	LeaveCriticalSection(&server->cSocketSection);
+	delete cSocket;
 	return 0;
 }

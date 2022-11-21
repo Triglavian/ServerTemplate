@@ -4,12 +4,17 @@
 #include <WS2tcpip.h>
 #include <process.h>
 
+#include <functional>
+#include <vector>	
+
 #include "ListenSocket.h"
 #include "ClientSocket.h"
+#include "ServerLogger.h"
 
-#include <functional>
-#include <vector>
+#include "Char.h"
 #include "Int.h"
+#include "Float.h"
+#include "Double.h"
 
 class ServerBase
 {
@@ -24,8 +29,11 @@ private:
 	Int result;
 	ListenSocket* lSocket;
 	SOCKET newSocket;
-	HANDLE threadHandle;
+	sockaddr_in clientAddr;
+	std::vector<HANDLE*>* threadHandles;
 	std::vector<ClientSocket*>* cSockets;
+	CRITICAL_SECTION handleSection;
+	CRITICAL_SECTION cSocketSection;
 
 	//base function
 	bool InitializeServer();
@@ -33,7 +41,5 @@ private:
 	void AcceptClients();
 
 	//service
-	//std::vector<std::function<void(ClientSocket*)>> services;
 	static unsigned int __stdcall StateSwitch(void* obj);
-
 };
